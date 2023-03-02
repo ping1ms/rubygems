@@ -84,7 +84,7 @@ module Bundler
       @new_platform = nil
       @removed_platform = nil
 
-      if lockfile && File.exist?(lockfile)
+      if lockfile_exists?(lockfile)
         @lockfile_contents = Bundler.read_file(lockfile)
         @locked_gems = LockfileParser.new(@lockfile_contents)
         @locked_platforms = @locked_gems.platforms
@@ -310,34 +310,24 @@ module Bundler
       dependencies.map(&:groups).flatten.uniq
     end
 
-    def lock(file, preserve_unknown_sections = false)
-      return if Definition.no_lock
+    def lock(file_or_preserve_unknown_sections = false, preserve_unknown_sections_or_unused = false)
+      if [true, false, nil].include?(file_or_preserve_unknown_sections)
+        target_lockfile = lockfile || Bundler.default_lockfile
+        preserve_unknown_sections = file_or_preserve_unknown_sections
+      else
+        target_lockfile = file_or_preserve_unknown_sections
+        preserve_unknown_sections = preserve_unknown_sections_or_unused
 
-      contents = to_lock
+        suggestion = if target_lockfile == lockfile
+          "To fix this warning, remove it from the `Definition#lock` call."
+        else
+          "Instead, instantiate a new definition passing `#{target_lockfile}`, and call `lock` without a file argument on that definition"
+        end
 
-      # Convert to \r\n if the existing lock has them
-      # i.e., Windows with `git config core.autocrlf=true`
-      contents.gsub!(/\n/, "\r\n") if @lockfile_contents.match?("\r\n")
-
-      if @locked_bundler_version
-        locked_major = @locked_bundler_version.segments.first
-        current_major = bundler_version_to_lock.segments.first
-
-        updating_major = locked_major < current_major
+        warn "Passing a file to `Definition#lock` is deprecated. #{suggestion}"
       end
 
-      preserve_unknown_sections ||= !updating_major && (Bundler.frozen_bundle? || !(unlocking? || @unlocking_bundler))
-
-      return if file && File.exist?(file) && lockfiles_equal?(@lockfile_contents, contents, preserve_unknown_sections)
-
-      if Bundler.frozen_bundle?
-        Bundler.ui.error "Cannot write a changed lockfile while frozen."
-        return
-      end
-
-      SharedHelpers.filesystem_access(file) do |p|
-        File.open(p, "wb") {|f| f.puts(contents) }
-      end
+      write_lock(target_lockfile, preserve_unknown_sections)
     end
 
     def locked_ruby_version
@@ -490,6 +480,40 @@ module Bundler
     end
 
     private
+
+    def write_lock(file, preserve_unknown_sections)
+      return if Definition.no_lock
+
+      contents = to_lock
+
+      # Convert to \r\n if the existing lock has them
+      # i.e., Windows with `git config core.autocrlf=true`
+      contents.gsub!(/\n/, "\r\n") if @lockfile_contents.match?("\r\n")
+
+      if @locked_bundler_version
+        locked_major = @locked_bundler_version.segments.first
+        current_major = bundler_version_to_lock.segments.first
+
+        updating_major = locked_major < current_major
+      end
+
+      preserve_unknown_sections ||= !updating_major && (Bundler.frozen_bundle? || !(unlocking? || @unlocking_bundler))
+
+      return if lockfile_exists?(file) && lockfiles_equal?(@lockfile_contents, contents, preserve_unknown_sections)
+
+      if Bundler.frozen_bundle?
+        Bundler.ui.error "Cannot write a changed lockfile while frozen."
+        return
+      end
+
+      SharedHelpers.filesystem_access(file) do |p|
+        File.open(p, "wb") {|f| f.puts(contents) }
+      end
+    end
+
+    def lockfile_exists?(file)
+      file && File.exist?(file)
+    end
 
     def resolver
       @resolver ||= Resolver.new(resolution_packages, gem_version_promoter)
