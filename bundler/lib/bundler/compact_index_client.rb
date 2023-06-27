@@ -54,13 +54,13 @@ module Bundler
 
     def names
       Bundler::CompactIndexClient.debug { "/names" }
-      update(@cache.names_path, "names")
+      update(@cache.names_path, "names", @cache.names_etag_path)
       @cache.names
     end
 
     def versions
       Bundler::CompactIndexClient.debug { "/versions" }
-      update(@cache.versions_path, "versions")
+      update(@cache.versions_path, "versions", @cache.versions_etag_path)
       versions, @info_checksums_by_name = @cache.versions
       versions
     end
@@ -76,25 +76,26 @@ module Bundler
     def update_and_parse_checksums!
       Bundler::CompactIndexClient.debug { "update_and_parse_checksums!" }
       return @info_checksums_by_name if @parsed_checksums
-      update(@cache.versions_path, "versions")
+      update(@cache.versions_path, "versions", @cache.versions_etag_path)
       @info_checksums_by_name = @cache.checksums
       @parsed_checksums = true
     end
 
     private
 
-    def update(local_path, remote_path)
+    def update(local_path, remote_path, local_etag_path)
       Bundler::CompactIndexClient.debug { "update(#{local_path}, #{remote_path})" }
       unless synchronize { @endpoints.add?(remote_path) }
         Bundler::CompactIndexClient.debug { "already fetched #{remote_path}" }
         return
       end
-      @updater.update(local_path, url(remote_path))
+      @updater.update(local_path, url(remote_path), local_etag_path)
     end
 
     def update_info(name)
       Bundler::CompactIndexClient.debug { "update_info(#{name})" }
       path = @cache.info_path(name)
+      etag_path = @cache.info_etag_path(name)
       checksum = @updater.checksum_for_file(path)
       unless existing = @info_checksums_by_name[name]
         Bundler::CompactIndexClient.debug { "skipping updating info for #{name} since it is missing from versions" }
@@ -105,7 +106,7 @@ module Bundler
         return
       end
       Bundler::CompactIndexClient.debug { "updating info for #{name} since the versions checksum #{existing} != the local checksum #{checksum}" }
-      update(path, "info/#{name}")
+      update(path, "info/#{name}", etag_path)
     end
 
     def url(path)
