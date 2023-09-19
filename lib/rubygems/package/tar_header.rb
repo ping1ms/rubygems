@@ -127,7 +127,8 @@ class Gem::Package::TarHeader
   end
 
   def self.strict_oct(str)
-    return str.strip.oct if /\A[0-7]*\z/.match?(str.strip)
+    str.strip!
+    return str.oct if /\A[0-7]*\z/.match?(str)
 
     raise ArgumentError, "#{str.inspect} is not an octal string"
   end
@@ -137,6 +138,8 @@ class Gem::Package::TarHeader
     # \ff flags a negative 256-based number
     # In case we have a match, parse it as a signed binary value
     # in big-endian order, except that the high-order bit is ignored.
+
+    # TODO: use str.unpack1("N", offset: 4) when we drop Ruby 2.x support
     return str.unpack("N2").last if /\A[\x80\xff]/n.match?(str)
     strict_oct(str)
   end
@@ -161,9 +164,7 @@ class Gem::Package::TarHeader
     vals[:devmajor] ||= 0
     vals[:devminor] ||= 0
 
-    FIELDS.each do |name|
-      instance_variable_set "@#{name}", vals[name]
-    end
+    copy_vals vals
 
     @empty = vals[:empty]
   end
@@ -243,4 +244,12 @@ class Gem::Package::TarHeader
   def oct(num, len)
     format("%0#{len}o", num)
   end
+
+  eval <<-RUBY, binding, __FILE__, __LINE__ + 1
+# frozen_string_literal: true
+
+  def copy_vals(vals)
+    #{FIELDS.map {|name| "@#{name} = vals[:#{name}]" }.join("; ")}
+  end
+  RUBY
 end

@@ -268,7 +268,7 @@ class Gem::Package
 
       tar.add_file_simple file, stat.mode, stat.size do |dst_io|
         File.open file, "rb" do |src_io|
-          dst_io.write src_io.read 16_384 until src_io.eof?
+          IO.copy_stream src_io, dst_io
         end
       end
     end
@@ -365,7 +365,9 @@ EOM
     algorithms.each do |algorithm|
       digester = Gem::Security.create_digest(algorithm)
 
-      digester << entry.readpartial(16_384) until entry.eof?
+      # Can't use IO.copy_stream since OpenSSL::Digest does not have a #write method
+      buf = String.new(capacity: 16_384, encoding: Encoding::BINARY)
+      digester << entry.readpartial(16_384, buf) until entry.eof?
 
       entry.rewind
 
@@ -437,8 +439,6 @@ EOM
 
         FileUtils.rm_rf destination
 
-        mkdir_options = {}
-        mkdir_options[:mode] = dir_mode ? 0o755 : (entry.header.mode if entry.directory?)
         mkdir =
           if entry.directory?
             destination
@@ -447,12 +447,12 @@ EOM
           end
 
         unless directories.include?(mkdir)
-          FileUtils.mkdir_p mkdir, **mkdir_options
+          FileUtils.mkdir_p mkdir, mode: dir_mode ? 0o755 : (entry.header.mode if entry.directory?)
           directories << mkdir
         end
 
         if entry.file?
-          File.open(destination, "wb") {|out| out.write entry.read }
+          File.open(destination, "wb") {|out| IO.copy_stream entry, out }
           FileUtils.chmod file_mode(entry.header.mode), destination
         end
 
@@ -708,7 +708,11 @@ EOM
 
   def verify_gz(entry) # :nodoc:
     Zlib::GzipReader.wrap entry do |gzio|
-      gzio.read 16_384 until gzio.eof? # gzip checksum verification
+      buf = String.new(capacity: 16_384, encoding: Encoding::BINARY)
+      begin
+        gzio.readpartial(16_384, buf) until gzio.eof? # gzip checksum verification
+      rescue EOFError
+      end
     end
   rescue Zlib::GzipFile::Error => e
     raise Gem::Package::FormatError.new(e.message, entry.full_name)

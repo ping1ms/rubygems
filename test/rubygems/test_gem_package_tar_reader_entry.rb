@@ -185,6 +185,13 @@ class TestGemPackageTarReaderEntry < Gem::Package::TarTestCase
     assert_equal @contents[0...100], @entry.readpartial(100)
   end
 
+  def test_readpartial_outbuf
+    buffer = String.new(capacity: 100, encoding: Encoding::BINARY)
+    partial = @entry.readpartial(100, buffer)
+    assert_equal @contents[0...100], partial
+    assert_same buffer, partial
+  end
+
   def test_readpartial_to_eof
     assert_equal @contents, @entry.readpartial(4096)
     assert @entry.eof?
