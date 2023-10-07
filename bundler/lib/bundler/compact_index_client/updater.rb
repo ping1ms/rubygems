@@ -1,23 +1,11 @@
 # frozen_string_literal: true
 
-require_relative "../vendored_fileutils"
-
 module Bundler
   class CompactIndexClient
     class Updater
-      # TODO: support more algorithms, at least sha-512
-      SUPPORTED_DIGESTS = ["sha-256"].freeze
-
-      class MisMatchedChecksumError < Error
-        def initialize(path, server_checksum, local_checksum)
-          @path = path
-          @server_checksum = server_checksum
-          @local_checksum = local_checksum
-        end
-
-        def message
-          "The checksum of /#{@path} does not match the checksum provided by the server! Something is wrong " \
-            "(local checksum is #{@local_checksum.inspect}, was expecting #{@server_checksum.inspect})."
+      class MismatchedChecksumError < Error
+        def initialize(path, message)
+          super "The checksum of /#{path} does not match the checksum provided by the server! Something is wrong. #{message}"
         end
       end
 
@@ -25,139 +13,86 @@ module Bundler
         @fetcher = fetcher
       end
 
-      def update(local_path, remote_path, local_etag_path, retrying = nil)
-        headers = {}
-
-        local_temp_path = local_path.sub(/$/, ".#{$$}")
-        local_temp_path = local_temp_path.sub(/$/, ".retrying") if retrying
-        local_etag_temp_path = local_temp_path.sub(/$/, ".etag.tmp")
-        local_etag_temp_path = local_temp_path.sub(/$/, ".etag.tmp.retrying") if retrying
-        local_temp_path = local_temp_path.sub(/$/, ".tmp")
-
-        # first try to fetch any new bytes on the existing file
-        if retrying.nil? && local_path.file? && local_etag_path.file?
-          copy_file local_path, local_temp_path
-          copy_file local_etag_path, local_etag_temp_path
-
-          headers["If-None-Match"] = local_etag_temp_path.read
-          headers["Range"] =
-            if local_temp_path.size.nonzero?
-              # Subtract a byte to ensure the range won't be empty.
-              # Avoids 416 (Range Not Satisfiable) responses.
-              "bytes=#{local_temp_path.size - 1}-"
-            else
-              "bytes=#{local_temp_path.size}-"
-            end
-        end
-
-        response = @fetcher.call(remote_path, headers)
-        return nil if response.is_a?(Net::HTTPNotModified)
-
-        content = response.body
-
-        etag = (response["ETag"] || "").gsub(%r{\AW/}, "")
-        # TODO: support Repr-Digest as well
-        response_digests = parse_digest_list(response["Digest"] || "")
-        supported_digest = response_digests.find {|digest| SUPPORTED_DIGESTS.include?(digest.algorithm) }
-
-        correct_response = SharedHelpers.filesystem_access(local_temp_path) do
-          if response.is_a?(Net::HTTPPartialContent) && local_temp_path.size.nonzero?
-            local_temp_path.open("a") {|f| f << slice_body(content, 1..-1) }
-          else
-            local_temp_path.open("wb") {|f| f << content }
-          end
-          local_etag_temp_path.open("wb") {|f| f << etag }
-
-          if supported_digest
-            supported_digest.value == digest_for_file(supported_digest.algorithm, local_temp_path)
-          else
-            # no supported digest found, no checksum check
-            true
-          end
-        end
-
-        if correct_response
-          SharedHelpers.filesystem_access(local_path) do
-            FileUtils.mv(local_temp_path, local_path)
-          end
-          SharedHelpers.filesystem_access(local_etag_path) do
-            FileUtils.mv(local_etag_temp_path, local_etag_path)
-          end
-
-          return nil
-        end
-
-        if retrying
-          raise MisMatchedChecksumError.new(remote_path, supported_digest.value, digest_for_file(supported_digest.algorithm, local_temp_path))
-        end
-
-        update(local_path, remote_path, local_etag_path, :retrying)
+      def update(remote_path, local_path, etag_path)
+        append(remote_path, local_path, etag_path) || replace(remote_path, local_path, etag_path)
+      rescue CacheFile::DigestMismatchError => e
+        raise MismatchedChecksumError.new(remote_path, e.message)
       rescue Zlib::GzipFile::Error
         raise Bundler::HTTPError
-      ensure
-        FileUtils.remove_file(local_temp_path) if File.exist?(local_temp_path)
-        FileUtils.remove_file(local_etag_temp_path) if local_etag_temp_path && File.exist?(local_etag_temp_path)
-      end
-
-      def slice_body(body, range)
-        body.byteslice(range)
-      end
-
-      def digest_for_file(algorithm, path)
-        return nil unless path.file?
-        return nil unless SUPPORTED_DIGESTS.include?(algorithm)
-
-        SharedHelpers.digest(:SHA256).base64digest(File.read(path))
-      end
-
-      def checksum_for_file(path)
-        return nil unless path.file?
-        # This must use File.read instead of Digest.file().hexdigest
-        # because we need to preserve \n line endings on windows when calculating
-        # the checksum
-        SharedHelpers.filesystem_access(path, :read) do
-          File.open(path, "rb") do |f|
-            digest = SharedHelpers.digest(:MD5).new
-            buf = String.new(:capacity => 16_384, :encoding => Encoding::BINARY)
-            digest << buf while f.read(16_384, buf)
-            digest.hexdigest
-          end
-        end
       end
 
       private
 
-      def copy_file(source, dest)
-        SharedHelpers.filesystem_access(source, :read) do
-          File.open(source, "r") do |s|
-            SharedHelpers.filesystem_access(dest, :write) do
-              File.open(dest, "wb", s.stat.mode) do |f|
-                IO.copy_stream(s, f)
-              end
-            end
+      def append(remote_path, local_path, etag_path)
+        return false unless local_path.file? && local_path.size.nonzero?
+
+        CacheFile.copy(local_path) do |file|
+          # Subtract a byte to ensure the range won't be empty.
+          # Avoids 416 (Range Not Satisfiable) responses.
+          response = @fetcher.call(remote_path, headers(etag_path, file.size - 1))
+          break true if response.is_a?(Net::HTTPNotModified)
+
+          file.digests = parse_digests(response)
+          # server may ignore Range and return the full response
+          if response.is_a?(Net::HTTPPartialContent)
+            break false unless file.append(response.body.byteslice(1..-1))
+          else
+            file.write(response.body)
           end
+          CacheFile.write(etag_path, etag(response))
+          true
         end
       end
 
-      ResponseDigest = Struct.new(:algorithm, :value)
+      # request without range header to get the full file or a 304 Not Modified
+      def replace(remote_path, local_path, etag_path)
+        response = @fetcher.call(remote_path, headers(etag_path))
+        return true if response.is_a?(Net::HTTPNotModified)
+        CacheFile.write(local_path, response.body, parse_digests(response))
+        CacheFile.write(etag_path, etag(response))
+      end
 
-      def parse_digest_list(header)
-        [].tap do |digest_list|
-          # Split the header by commas
-          header.split(",").each do |param|
-            # split only on first `=` sign
-            parts = param.split("=", 2)
-            algorithm = parts[0].strip
-            value = parts[1]
-
-            # unwrap surrounding quotes if present
-            if value.start_with?('"') && value.end_with?('"')
-              value = value[1..-2]
-            end
-
-            digest_list << ResponseDigest.new(algorithm, value)
-          end
+      def headers(etag_path, range_start = nil)
+        headers = {}
+        headers["Range"] = "bytes=#{range_start}-" if range_start
+        if etag_path.file?
+          etag = etag_path.read
+          etag.chomp!
+          headers["If-None-Match"] = etag
         end
+        headers
+      end
+
+      def etag(response)
+        return unless response["ETag"]
+        etag = response["ETag"].delete_prefix("W/")
+        return if etag.delete_prefix!('"') && !etag.delete_suffix!('"')
+        etag
+      end
+
+      # Unwraps and returns a Hash of digest algorithms and base64 values
+      # according to RFC 8941 Structured Field Values for HTTP.
+      # https://www.rfc-editor.org/rfc/rfc8941#name-parsing-a-byte-sequence
+      # Ignores unsupported algorithms.
+      def parse_digests(response)
+        return unless header = response["Repr-Digest"] || response["Digest"]
+        digests = {}
+        header.split(",") do |param|
+          algorithm, value = param.split("=", 2)
+          algorithm.strip!
+          algorithm.downcase!
+          next unless SUPPORTED_DIGESTS.key?(algorithm)
+          next unless value = byte_sequence(value)
+          digests[algorithm] = value
+        end
+        digests.empty? ? nil : digests
+      end
+
+      # Unwrap surrounding colons (byte sequence)
+      # The wrapping characters must be matched or we return nil.
+      def byte_sequence(value)
+        return if value.delete_prefix!(":") && !value.delete_suffix!(":")
+        value
       end
     end
   end
