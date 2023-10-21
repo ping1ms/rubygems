@@ -258,7 +258,12 @@ module Spec
       @_build_repo = File.basename(path)
       yield
       with_gem_path_as Path.base_system_gem_path do
-        gem_command :generate_index, :dir => path
+        generate_index_path = Dir[Spec::Path.base_system_gem_path.join("gems/rubygems-generate_index*/lib")].first ||
+         "/Users/segiddins/Development/github.com/rubygems/rubygems-generate_index/lib"
+        env = {
+          "RUBYOPT" => "-I#{generate_index_path} -r#{File.join(generate_index_path, "rubygems_plugin.rb")}"
+        }
+        gem_command :generate_index, :dir => path, :env => env
       end
     ensure
       @_build_path = nil

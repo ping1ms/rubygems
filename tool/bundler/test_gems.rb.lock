@@ -1,8 +1,14 @@
+PATH
+  remote: /Users/segiddins/Development/github.com/rubygems/rubygems-generate_index
+  specs:
+    rubygems-generate_index (3.5.0)
+      compact_index (~> 0.14.0)
+
 GEM
   remote: https://rubygems.org/
   specs:
     builder (3.2.4)
-    compact_index (0.13.0)
+    compact_index (0.14.0)
     mustermann (1.1.2)
       ruby2_keywords (~> 0.0.1)
     rack (2.0.8)
@@ -34,11 +40,12 @@ PLATFORMS
 
 DEPENDENCIES
   builder (~> 3.2)
-  compact_index (~> 0.13.0)
+  compact_index (~> 0.14.0)
   rack (= 2.0.8)
   rack-test (~> 1.1)
   rake (= 13.0.1)
   rb_sys
+  rubygems-generate_index!
   sinatra (~> 2.0)
   tilt (~> 2.0.11)
   webrick (= 1.7.0)
