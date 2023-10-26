@@ -649,7 +649,7 @@ class Gem::Licenses
       | #{LICENSE_REF}
     )
     \Z
-  /ox.freeze
+  /ox
 
   DEPRECATED_LICENSE_REGEXP = /
     \A
@@ -657,7 +657,7 @@ class Gem::Licenses
     \+?
     (?:\s WITH \s .+?)?
     \Z
-  /ox.freeze
+  /ox
 
   DEPRECATED_EXCEPTION_REGEXP = /
     \A
@@ -665,7 +665,7 @@ class Gem::Licenses
     \+?
     (?:\s WITH \s #{Regexp.union(DEPRECATED_EXCEPTION_IDENTIFIERS)})
     \Z
-  /ox.freeze
+  /ox
 
   def self.match?(license)
     VALID_REGEXP.match?(license)
