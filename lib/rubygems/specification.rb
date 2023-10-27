@@ -961,7 +961,7 @@ class Gem::Specification < Gem::BasicSpecification
 
   def self.dirs
     @@dirs ||= Gem.path.collect do |dir|
-      File.join dir.dup, "specifications"
+      File.join dir, "specifications"
     end
   end
 
@@ -1154,7 +1154,6 @@ class Gem::Specification < Gem::BasicSpecification
     spec = @load_cache_mutex.synchronize { @load_cache[file] }
     return spec if spec
 
-    file = file.dup
     return unless File.file?(file)
 
     code = Gem.open_file(file, "r:UTF-8:-", &:read)
